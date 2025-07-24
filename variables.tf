@@ -15,28 +15,34 @@ variable "vpc_cidr" {
   default     = "172.31.0.0/16"
 }
 
-variable "public_subnet_cidr" {
+variable "public_subnet_cidr_1" {
   description = "CIDR for public subnet"
   type        = string
   default     = "172.31.0.0/20"
 }
 
+variable "public_subnet_cidr_2" {
+  description = "CIDR for public subnet"
+  type        = string
+  default     = "172.31.16.0/20"
+}
+
 variable "private_app_subnet_cidr" {
   description = "CIDR for private app subnet"
   type        = string
-  default     = "172.31.16.0/20"
+  default     = "172.31.32.0/20"
 }
 
 variable "private_db_subnet_cidr_1" {
   description = "CIDR for private db subnet"
   type        = string
-  default     = "172.31.32.0/20"
+  default     = "172.31.48.0/20"
 }
 
 variable "private_db_subnet_cidr_2" {
   description = "CIDR for private db subnet"
   type        = string
-  default     = "172.31.48.0/20"
+  default     = "172.31.64.0/20"
 }
 
 variable "db_engine" {

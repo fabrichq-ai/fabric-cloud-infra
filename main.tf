@@ -64,13 +64,21 @@ resource "aws_internet_gateway" "igw" {
 # 4. SUBNETS & ROUTE TABLES#
 ############################
 
-# Public subnet (single AZ)
-resource "aws_subnet" "public" {
+# Public subnets (2 AZs)
+resource "aws_subnet" "public_1" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidr
+  cidr_block              = var.public_subnet_cidr_1
   availability_zone       = local.az1
   map_public_ip_on_launch = true
-  tags                    = merge(local.common_tags, { Name = "${var.project}-public-subnet" })
+  tags                    = merge(local.common_tags, { Name = "${var.project}-public-subnet-1" })
+}
+
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidr_2
+  availability_zone       = local.az2
+  map_public_ip_on_launch = true
+  tags                    = merge(local.common_tags, { Name = "${var.project}-public-subnet-2" })
 }
 
 resource "aws_route_table" "public" {
@@ -78,15 +86,20 @@ resource "aws_route_table" "public" {
   tags   = merge(local.common_tags, { Name = "${var.project}-public-rt" })
 }
 
+resource "aws_route_table_association" "public_assoc_1" {
+  subnet_id      = aws_subnet.public_1.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_assoc_2" {
+  subnet_id      = aws_subnet.public_2.id
+  route_table_id = aws_route_table.public.id
+}
+
 resource "aws_route" "public_internet" {
   route_table_id         = aws_route_table.public.id
   destination_cidr_block = "0.0.0.0/0"
   gateway_id             = aws_internet_gateway.igw.id
-}
-
-resource "aws_route_table_association" "public_assoc" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
 }
 
 # NAT Gateway (in public subnet AZ1)
@@ -98,7 +111,7 @@ resource "aws_eip" "nat" {
 
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
+  subnet_id     = aws_subnet.public_1.id
   tags          = merge(local.common_tags, { Name = "${var.project}-nat-gw" })
 }
 
@@ -376,12 +389,12 @@ data "aws_acm_certificate" "stage_issued" {
 }
 
 resource "aws_lb" "app" {
-  count                     = var.enable_alb ? 1 : 0
+  count                     = var.enable_alb ? 1 : 1
   name                      = "${var.project}-alb"
   internal                  = false
   load_balancer_type        = "application"
   security_groups           = [aws_security_group.alb.id]
-  subnets                   = [aws_subnet.public.id]
+  subnets                   = [aws_subnet.public_1.id, aws_subnet.public_2.id]
   enable_deletion_protection = false
   tags                      = local.common_tags
 }
