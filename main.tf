@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
@@ -41,6 +45,7 @@ locals {
   cw_log_group_db_upgrade    = "/aws/rds/instance/${var.project}-db/upgrade"
   cw_log_group_server        = "/${var.project}/server"
   cw_log_group_celery        = "/${var.project}/celery"
+  cw_log_group_vpn           = "/aws/clientvpn/${var.project}"
 }
 
 #############
@@ -86,6 +91,12 @@ resource "aws_route_table" "public" {
   tags   = merge(local.common_tags, { Name = "${var.project}-public-rt" })
 }
 
+resource "aws_route" "public_internet" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
 resource "aws_route_table_association" "public_assoc_1" {
   subnet_id      = aws_subnet.public_1.id
   route_table_id = aws_route_table.public.id
@@ -96,23 +107,17 @@ resource "aws_route_table_association" "public_assoc_2" {
   route_table_id = aws_route_table.public.id
 }
 
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
-}
-
 # NAT Gateway (in public subnet AZ1)
-resource "aws_eip" "nat" {
+resource "aws_eip" "nat-1" {
   domain     = "vpc"
   depends_on = [aws_internet_gateway.igw]
-  tags       = merge(local.common_tags, { Name = "${var.project}-nat-eip" })
+  tags       = merge(local.common_tags, { Name = "${var.project}-nat-eip-1" })
 }
 
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
+resource "aws_nat_gateway" "nat-1" {
+  allocation_id = aws_eip.nat-1.id
   subnet_id     = aws_subnet.public_1.id
-  tags          = merge(local.common_tags, { Name = "${var.project}-nat-gw" })
+  tags          = merge(local.common_tags, { Name = "${var.project}-nat-gw-1" })
 }
 
 # Private APP subnet (single AZ)
@@ -131,7 +136,7 @@ resource "aws_route_table" "private_app" {
 resource "aws_route" "private_app_nat" {
   route_table_id         = aws_route_table.private_app.id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.nat.id
+  nat_gateway_id         = aws_nat_gateway.nat-1.id
 }
 
 resource "aws_route_table_association" "private_app_assoc" {
@@ -154,19 +159,19 @@ resource "aws_subnet" "private_db_2" {
   tags              = merge(local.common_tags, { Name = "${var.project}-private-db-subnet-2" })
 }
 
-resource "aws_route_table" "private_db_1" {
+resource "aws_route_table" "private_db" {
   vpc_id = aws_vpc.main.id
-  tags   = merge(local.common_tags, { Name = "${var.project}-private-db-rt-1" })
+  tags   = merge(local.common_tags, { Name = "${var.project}-private-db-rt" })
 }
 
 resource "aws_route_table_association" "private_db_assoc_1" {
   subnet_id      = aws_subnet.private_db_1.id
-  route_table_id = aws_route_table.private_db_1.id
+  route_table_id = aws_route_table.private_db.id
 }
 
 resource "aws_route_table_association" "private_db_assoc_2" {
   subnet_id      = aws_subnet.private_db_2.id
-  route_table_id = aws_route_table.private_db_1.id
+  route_table_id = aws_route_table.private_db.id
 }
 
 ############################
@@ -227,12 +232,12 @@ resource "aws_security_group" "app" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # Optional SSH: replace CIDR with your VPN IP/CIDR or remove completely
+  # SSH access from VPN clients
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["203.0.113.0/32"]
+    cidr_blocks = [var.vpn_client_cidr]
   }
 
   egress {
@@ -245,17 +250,26 @@ resource "aws_security_group" "app" {
   tags = merge(local.common_tags, { Name = "${var.project}-app-sg" })
 }
 
-# RDS SG (only allow Postgres from app SG)
+# RDS SG (allow from app SG and VPN clients)
 resource "aws_security_group" "rds" {
   name        = "${var.project}-rds-sg"
   description = "RDS isolated SG"
   vpc_id      = aws_vpc.main.id
 
+  # Allow from app servers
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.app.id]
+  }
+
+  # Allow from VPN clients
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [var.vpn_client_cidr]
   }
 
   tags = merge(local.common_tags, { Name = "${var.project}-rds-sg" })
@@ -315,6 +329,19 @@ resource "aws_cloudwatch_log_group" "celery" {
   tags              = local.common_tags
 }
 
+# VPN CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "vpn" {
+  name              = local.cw_log_group_vpn
+  retention_in_days = var.cloudwatch_retention_days
+  tags              = local.common_tags
+}
+
+# VPN CloudWatch Log Stream
+resource "aws_cloudwatch_log_stream" "vpn" {
+  name           = "${var.project}-vpn-connection-logs"
+  log_group_name = aws_cloudwatch_log_group.vpn.name
+}
+
 # (NEW) IAM Role for EC2 CloudWatch Agent (common role)
 resource "aws_iam_role" "cw_agent" {
   name = "${var.project}-cw-agent-role"
@@ -339,6 +366,172 @@ resource "aws_iam_instance_profile" "cw_agent" {
   role = aws_iam_role.cw_agent.name
 }
 
+###################################
+# 5B. CLIENT VPN CERTIFICATES     #
+###################################
+
+# Generate CA private key
+resource "tls_private_key" "ca" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+# Generate CA certificate
+resource "tls_self_signed_cert" "ca" {
+  private_key_pem = tls_private_key.ca.private_key_pem
+
+  subject {
+    common_name  = "${var.project}-vpn-ca.local"
+    organization = var.project
+  }
+
+  dns_names = ["${var.project}-vpn-ca.local"]
+
+  validity_period_hours = 87600 # 10 years
+  is_ca_certificate     = true
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "cert_signing",
+  ]
+}
+
+# Generate server private key
+resource "tls_private_key" "server" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+# Generate server certificate
+resource "tls_cert_request" "server" {
+  private_key_pem = tls_private_key.server.private_key_pem
+
+  subject {
+    common_name  = "${var.project}-vpn-server.local"
+    organization = var.project
+  }
+
+  dns_names = ["${var.project}-vpn-server.local"]
+}
+
+resource "tls_locally_signed_cert" "server" {
+  cert_request_pem   = tls_cert_request.server.cert_request_pem
+  ca_private_key_pem = tls_private_key.ca.private_key_pem
+  ca_cert_pem        = tls_self_signed_cert.ca.cert_pem
+
+  validity_period_hours = 87600 # 10 years
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
+# Generate client private key
+resource "tls_private_key" "client" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+# Generate client certificate
+resource "tls_cert_request" "client" {
+  private_key_pem = tls_private_key.client.private_key_pem
+
+  subject {
+    common_name  = "${var.project}-vpn-client.local"
+    organization = var.project
+  }
+
+  dns_names = ["${var.project}-vpn-client.local"]
+}
+
+resource "tls_locally_signed_cert" "client" {
+  cert_request_pem   = tls_cert_request.client.cert_request_pem
+  ca_private_key_pem = tls_private_key.ca.private_key_pem
+  ca_cert_pem        = tls_self_signed_cert.ca.cert_pem
+
+  validity_period_hours = 87600 # 10 years
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "client_auth",
+  ]
+}
+
+# Upload certificates to ACM
+resource "aws_acm_certificate" "server" {
+  private_key      = tls_private_key.server.private_key_pem
+  certificate_body = tls_locally_signed_cert.server.cert_pem
+  certificate_chain = tls_self_signed_cert.ca.cert_pem
+
+  tags = merge(local.common_tags, { Name = "${var.project}-vpn-server-cert" })
+}
+
+resource "aws_acm_certificate" "client" {
+  private_key      = tls_private_key.client.private_key_pem
+  certificate_body = tls_locally_signed_cert.client.cert_pem
+  certificate_chain = tls_self_signed_cert.ca.cert_pem
+
+  tags = merge(local.common_tags, { Name = "${var.project}-vpn-client-cert" })
+}
+
+###################################
+# 5C. CLIENT VPN ENDPOINT         #
+###################################
+
+resource "aws_ec2_client_vpn_endpoint" "main" {
+  description            = "${var.project} Client VPN"
+  server_certificate_arn = aws_acm_certificate.server.arn
+  client_cidr_block      = var.vpn_client_cidr
+  split_tunnel           = true
+  dns_servers            = [cidrhost(var.vpc_cidr, 2)] # VPC DNS resolver
+
+  authentication_options {
+    type                       = "certificate-authentication"
+    root_certificate_chain_arn = aws_acm_certificate.client.arn
+  }
+
+  connection_log_options {
+    enabled               = true
+    cloudwatch_log_group  = aws_cloudwatch_log_group.vpn.name
+    cloudwatch_log_stream = aws_cloudwatch_log_stream.vpn.name
+  }
+
+  tags = merge(local.common_tags, { Name = "${var.project}-client-vpn" })
+}
+
+# Associate VPN with private app subnet only (simpler approach)
+resource "aws_ec2_client_vpn_network_association" "app" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  subnet_id              = aws_subnet.private_app.id
+}
+
+# Authorization rules
+resource "aws_ec2_client_vpn_authorization_rule" "vpc_access" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  target_network_cidr    = var.vpc_cidr
+  authorize_all_groups   = true
+  description            = "Access to VPC"
+}
+
+resource "aws_ec2_client_vpn_authorization_rule" "internet_access" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  target_network_cidr    = "0.0.0.0/0"
+  authorize_all_groups   = true
+  description            = "Internet access"
+}
+
+# Route for internet access through NAT Gateway
+resource "aws_ec2_client_vpn_route" "internet" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+  destination_cidr_block = "0.0.0.0/0"
+  target_vpc_subnet_id   = aws_subnet.private_app.id
+  description            = "Route to internet via NAT"
+}
+
 ##########################
 # 6. COMPUTE – EC2 (NOW) #
 ##########################
@@ -350,9 +543,17 @@ resource "aws_instance" "app" {
   vpc_security_group_ids      = [aws_security_group.app.id]
   key_name                    = var.key_pair_name != "" ? var.key_pair_name : null
   associate_public_ip_address = false
+  disable_api_termination     = false
+  monitoring                  = true
 
   # Attach CW agent IAM profile
   iam_instance_profile        = aws_iam_instance_profile.cw_agent.name
+
+  root_block_device {
+    volume_size = 120          # 100GB more than default if it was 20GB
+    volume_type = "gp3"
+    delete_on_termination = true
+  }
 
   tags = merge(local.common_tags, { Name = "${var.project}-app-ec2" })
 }
@@ -527,4 +728,39 @@ output "ec2_private_ip" {
 
 output "rds_endpoint" {
   value = aws_db_instance.main.endpoint
+}
+
+# VPN-related outputs
+output "vpn_endpoint_id" {
+  value       = aws_ec2_client_vpn_endpoint.main.id
+  description = "Client VPN Endpoint ID"
+}
+
+output "vpn_endpoint_dns_name" {
+  value       = aws_ec2_client_vpn_endpoint.main.dns_name
+  description = "Client VPN Endpoint DNS Name"
+}
+
+# Save client configuration files
+resource "local_file" "client_certificate" {
+  content    = tls_locally_signed_cert.client.cert_pem
+  filename   = "${path.module}/client.crt"
+  depends_on = [tls_locally_signed_cert.client]
+}
+
+resource "local_file" "client_private_key" {
+  content    = tls_private_key.client.private_key_pem
+  filename   = "${path.module}/client.key"
+  depends_on = [tls_private_key.client]
+}
+
+resource "local_file" "ca_certificate" {
+  content    = tls_self_signed_cert.ca.cert_pem
+  filename   = "${path.module}/ca.crt"
+  depends_on = [tls_self_signed_cert.ca]
+}
+
+output "vpn_configuration_download_command" {
+  value = "aws ec2 export-client-vpn-client-configuration --client-vpn-endpoint-id ${aws_ec2_client_vpn_endpoint.main.id} --output text > ${var.project}-vpn-config.ovpn"
+  description = "Run this command to download the VPN configuration file after deployment"
 }

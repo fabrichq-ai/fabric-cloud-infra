@@ -1,0 +1,25 @@
+aws_region = "ap-south-1"
+project = "fabric-prod"
+
+vpc_cidr = "172.31.0.0/16"
+public_subnet_cidr_1 = "172.31.0.0/20"
+public_subnet_cidr_2 = "172.31.16.0/20"
+private_app_subnet_cidr = "172.31.32.0/20"
+private_db_subnet_cidr_1 = "172.31.48.0/20"
+private_db_subnet_cidr_2 = "172.31.64.0/20"
+
+
+db_engine        = "postgres"
+db_engine_version = "16.9"
+db_instance_class = "db.t3.medium"
+db_username      = "fabric"
+db_password      = ""
+db_name          = "fabric_db"
+
+enable_alb       = true
+
+key_pair_name = "MehulAwsMumbai"
+ec2_instance_type = "t2.xlarge"
+
+cloudwatch_retention_days = 30
+server_ec2_ami_id = "ami-09b0a86a2c84101e1"

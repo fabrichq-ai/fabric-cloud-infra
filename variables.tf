@@ -114,3 +114,9 @@ variable "alb_domains" {
   default     = ["stage.fabrichq.ai", "stage-api.fabrichq.ai"]
   description = "Primary + SANs for ACM cert"
 }
+
+variable "vpn_client_cidr" {
+  description = "CIDR block for VPN clients (should not overlap with VPC CIDR)"
+  type        = string
+  default     = "192.168.100.0/22"  # Supports ~1000 concurrent connections
+}
