@@ -206,6 +206,30 @@ resource "aws_security_group" "alb" {
   tags = merge(local.common_tags, { Name = "${var.project}-alb-sg" })
 }
 
+
+# NEW: SG for Client VPN network association ENI
+resource "aws_security_group" "cvpn_eni" {
+  name        = "${var.project}-cvpn-eni-sg"
+  description = "Allow traffic from Client VPN clients into VPC"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpn_client_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.common_tags, { Name = "${var.project}-cvpn-eni-sg" })
+}
+
 # App EC2 SG
 resource "aws_security_group" "app" {
   name        = "${var.project}-app-sg"
@@ -237,7 +261,7 @@ resource "aws_security_group" "app" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [var.vpn_client_cidr]
+    security_groups = [aws_security_group.cvpn_eni.id]
   }
 
   egress {
@@ -269,7 +293,7 @@ resource "aws_security_group" "rds" {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = [var.vpn_client_cidr]
+    security_groups = [aws_security_group.cvpn_eni.id]
   }
 
   tags = merge(local.common_tags, { Name = "${var.project}-rds-sg" })
@@ -394,6 +418,7 @@ resource "tls_self_signed_cert" "ca" {
     "key_encipherment",
     "digital_signature",
     "cert_signing",
+    "crl_signing",
   ]
 }
 
@@ -426,6 +451,7 @@ resource "tls_locally_signed_cert" "server" {
     "key_encipherment",
     "digital_signature",
     "server_auth",
+    "client_auth",
   ]
 }
 
@@ -463,16 +489,16 @@ resource "tls_locally_signed_cert" "client" {
 
 # Upload certificates to ACM
 resource "aws_acm_certificate" "server" {
-  private_key      = tls_private_key.server.private_key_pem
-  certificate_body = tls_locally_signed_cert.server.cert_pem
+  private_key       = tls_private_key.server.private_key_pem
+  certificate_body  = tls_locally_signed_cert.server.cert_pem
   certificate_chain = tls_self_signed_cert.ca.cert_pem
 
   tags = merge(local.common_tags, { Name = "${var.project}-vpn-server-cert" })
 }
 
 resource "aws_acm_certificate" "client" {
-  private_key      = tls_private_key.client.private_key_pem
-  certificate_body = tls_locally_signed_cert.client.cert_pem
+  private_key       = tls_private_key.client.private_key_pem
+  certificate_body  = tls_locally_signed_cert.client.cert_pem
   certificate_chain = tls_self_signed_cert.ca.cert_pem
 
   tags = merge(local.common_tags, { Name = "${var.project}-vpn-client-cert" })
@@ -499,6 +525,9 @@ resource "aws_ec2_client_vpn_endpoint" "main" {
     cloudwatch_log_group  = aws_cloudwatch_log_group.vpn.name
     cloudwatch_log_stream = aws_cloudwatch_log_stream.vpn.name
   }
+
+  vpc_id = aws_vpc.main.id
+  security_group_ids = [aws_security_group.cvpn_eni.id]
 
   tags = merge(local.common_tags, { Name = "${var.project}-client-vpn" })
 }
@@ -550,8 +579,8 @@ resource "aws_instance" "app" {
   iam_instance_profile        = aws_iam_instance_profile.cw_agent.name
 
   root_block_device {
-    volume_size = 120          # 100GB more than default if it was 20GB
-    volume_type = "gp3"
+    volume_size           = 120          # 100GB more than default if it was 20GB
+    volume_type           = "gp3"
     delete_on_termination = true
   }
 
@@ -590,14 +619,14 @@ data "aws_acm_certificate" "stage_issued" {
 }
 
 resource "aws_lb" "app" {
-  count                     = var.enable_alb ? 1 : 1
-  name                      = "${var.project}-alb"
-  internal                  = false
-  load_balancer_type        = "application"
-  security_groups           = [aws_security_group.alb.id]
-  subnets                   = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  count                      = var.enable_alb ? 1 : 1
+  name                       = "${var.project}-alb"
+  internal                   = false
+  load_balancer_type         = "application"
+  security_groups            = [aws_security_group.alb.id]
+  subnets                    = [aws_subnet.public_1.id, aws_subnet.public_2.id]
   enable_deletion_protection = false
-  tags                      = local.common_tags
+  tags                       = local.common_tags
 }
 
 resource "aws_lb_target_group" "app" {
@@ -761,6 +790,57 @@ resource "local_file" "ca_certificate" {
 }
 
 output "vpn_configuration_download_command" {
-  value = "aws ec2 export-client-vpn-client-configuration --client-vpn-endpoint-id ${aws_ec2_client_vpn_endpoint.main.id} --output text > ${var.project}-vpn-config.ovpn"
+  value       = "aws ec2 export-client-vpn-client-configuration --client-vpn-endpoint-id ${aws_ec2_client_vpn_endpoint.main.id} --output text > ${var.project}-vpn-config.ovpn"
   description = "Run this command to download the VPN configuration file after deployment"
+}
+
+################################################################################
+# Generate Client VPN Config File
+################################################################################
+
+data "aws_ec2_client_vpn_endpoint" "selected" {
+  client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.main.id
+
+  depends_on = [
+    aws_ec2_client_vpn_endpoint.main
+  ]
+}
+
+resource "local_file" "vpn_config" {
+  filename = "${path.root}/client.ovpn"
+  content  = <<-EOT
+client
+dev tun
+proto udp
+remote ${aws_ec2_client_vpn_endpoint.main.dns_name} 443
+remote-random-hostname
+resolv-retry infinite
+nobind
+remote-cert-tls server
+cipher AES-256-GCM
+verify-x509-name ${aws_acm_certificate.server.domain_name} name
+reneg-sec 0
+verb 3
+
+<ca>
+${tls_self_signed_cert.ca.cert_pem}
+</ca>
+
+<cert>
+${tls_locally_signed_cert.client.cert_pem}
+</cert>
+
+<key>
+${tls_private_key.client.private_key_pem}
+</key>
+EOT
+
+  file_permission = "0600"
+
+  depends_on = [
+    aws_ec2_client_vpn_endpoint.main,
+    tls_locally_signed_cert.client,
+    tls_private_key.client,
+    tls_self_signed_cert.ca
+  ]
 }
