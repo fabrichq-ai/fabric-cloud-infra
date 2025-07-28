@@ -348,20 +348,10 @@ resource "aws_cloudwatch_log_group" "server" {
   tags              = local.common_tags
 }
 
-resource "aws_cloudwatch_log_stream" "server_all_logs" {
-  name           = "all_logs"
-  log_group_name = aws_cloudwatch_log_group.server.name
-}
-
 resource "aws_cloudwatch_log_group" "celery" {
   name              = local.cw_log_group_celery
   retention_in_days = var.cloudwatch_retention_days
   tags              = local.common_tags
-}
-
-resource "aws_cloudwatch_log_stream" "celery_all_logs" {
-  name           = "all_logs"
-  log_group_name = aws_cloudwatch_log_group.celery.name
 }
 
 # VPN CloudWatch Log Group
