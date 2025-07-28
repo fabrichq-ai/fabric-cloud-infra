@@ -347,10 +347,21 @@ resource "aws_cloudwatch_log_group" "server" {
   retention_in_days = var.cloudwatch_retention_days
   tags              = local.common_tags
 }
+
+resource "aws_cloudwatch_log_stream" "server_all_logs" {
+  name           = "all_logs"
+  log_group_name = aws_cloudwatch_log_group.server.name
+}
+
 resource "aws_cloudwatch_log_group" "celery" {
   name              = local.cw_log_group_celery
   retention_in_days = var.cloudwatch_retention_days
   tags              = local.common_tags
+}
+
+resource "aws_cloudwatch_log_stream" "celery_all_logs" {
+  name           = "all_logs"
+  log_group_name = aws_cloudwatch_log_group.celery.name
 }
 
 # VPN CloudWatch Log Group
@@ -383,6 +394,11 @@ resource "aws_iam_role" "cw_agent" {
 resource "aws_iam_role_policy_attachment" "cw_agent_attach" {
   role       = aws_iam_role.cw_agent.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
+  role       = aws_iam_role.cw_agent.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "cw_agent" {
