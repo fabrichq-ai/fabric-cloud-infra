@@ -111,7 +111,7 @@ variable "server_ec2_ami_id" {
 
 variable "alb_domains" {
   type        = list(string)
-  default     = ["app.fabrichq.ai", "app-api.fabrichq.ai"]
+  default     = ["app.fabrichq.ai", "app-api.fabrichq.ai", "dashboard.fabrichq.ai"]
   description = "Primary + SANs for ACM cert"
 }
 

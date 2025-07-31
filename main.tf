@@ -593,11 +593,23 @@ resource "aws_instance" "app" {
   tags = merge(local.common_tags, { Name = "${var.project}-app-ec2" })
 }
 
+resource "aws_instance" "dashboard_app" {
+  ami                         = "ami-075b06d55777be7cd"
+  instance_type               = "t4g.medium"
+  subnet_id                   = aws_subnet.private_app.id
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  key_name                    = var.key_pair_name != "" ? var.key_pair_name : null
+  associate_public_ip_address = false
+  disable_api_termination     = false
+
+  tags = merge(local.common_tags, { Name = "${var.project}-dashboard-app-ec2" })
+}
+
 ########################
 # 7.  LOAD BALANCER    #
 ########################
 
-resource "aws_acm_certificate" "stage" {
+resource "aws_acm_certificate" "prod" {
   domain_name               = var.alb_domains[0]
   subject_alternative_names = slice(var.alb_domains, 1, length(var.alb_domains))
   validation_method         = "DNS"
@@ -605,10 +617,10 @@ resource "aws_acm_certificate" "stage" {
 }
 
 # Output the exact CNAMEs you must create in Namecheap
-output "acm_dns_validation_records" {
+output "acm_dns_validation_records_prod" {
   description = "Create these CNAME records in Namecheap."
   value = {
-    for dvo in aws_acm_certificate.stage.domain_validation_options :
+    for dvo in aws_acm_certificate.prod.domain_validation_options :
     dvo.domain_name => {
       name  = dvo.resource_record_name
       type  = dvo.resource_record_type
@@ -617,11 +629,11 @@ output "acm_dns_validation_records" {
   }
 }
 
-data "aws_acm_certificate" "stage_issued" {
+data "aws_acm_certificate" "prod_issued" {
   domain      = var.alb_domains[0]
   statuses    = ["ISSUED"]
   most_recent = true
-  depends_on  = [aws_acm_certificate.stage]
+  depends_on  = [aws_acm_certificate.prod]
 }
 
 resource "aws_lb" "app" {
@@ -654,18 +666,53 @@ resource "aws_lb_target_group" "app" {
   tags = local.common_tags
 }
 
-# HTTPS listener
+resource "aws_lb_target_group" "dashboard" {
+  count       = var.enable_alb ? 1 : 0
+  name        = "${var.project}-dashboard-tg"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    unhealthy_threshold = 2
+    healthy_threshold   = 3
+  }
+
+  tags = local.common_tags
+}
+
 resource "aws_lb_listener" "https" {
   count             = var.enable_alb ? 1 : 0
   load_balancer_arn = aws_lb.app[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = data.aws_acm_certificate.stage_issued.arn
+  certificate_arn   = data.aws_acm_certificate.prod_issued.arn
 
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app[0].arn
+  }
+}
+
+resource "aws_lb_listener_rule" "https_dashboard_redirect" {
+  count        = var.enable_alb ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 20
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.dashboard[0].arn
+  }
+
+  condition {
+    host_header {
+      values = ["dashboard.fabrichq.ai"]
+    }
   }
 }
 
@@ -690,6 +737,13 @@ resource "aws_lb_target_group_attachment" "app" {
   count            = var.enable_alb ? 1 : 0
   target_group_arn = aws_lb_target_group.app[0].arn
   target_id        = aws_instance.app.id
+  port             = 80
+}
+
+resource "aws_lb_target_group_attachment" "dashboard" {
+  count            = var.enable_alb ? 1 : 0
+  target_group_arn = aws_lb_target_group.dashboard[0].arn
+  target_id        = aws_instance.dashboard_app.id
   port             = 80
 }
 
