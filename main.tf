@@ -633,6 +633,7 @@ resource "aws_lb" "app" {
   subnets                    = [aws_subnet.public_1.id, aws_subnet.public_2.id]
   enable_deletion_protection = false
   tags                       = local.common_tags
+  idle_timeout = 300
 }
 
 resource "aws_lb_target_group" "app" {
