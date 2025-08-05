@@ -45,6 +45,7 @@ locals {
   cw_log_group_db_upgrade    = "/aws/rds/instance/${var.project}-db/upgrade"
   cw_log_group_server        = "/${var.project}/server"
   cw_log_group_celery        = "/${var.project}/celery"
+  cw_log_group_calling_agent = "/${var.project}/calling-agent"
   cw_log_group_vpn           = "/aws/clientvpn/${var.project}"
 }
 
@@ -350,6 +351,12 @@ resource "aws_cloudwatch_log_group" "server" {
 
 resource "aws_cloudwatch_log_group" "celery" {
   name              = local.cw_log_group_celery
+  retention_in_days = var.cloudwatch_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_cloudwatch_log_group" "calling_agent" {
+  name              = local.cw_log_group_calling_agent
   retention_in_days = var.cloudwatch_retention_days
   tags              = local.common_tags
 }
