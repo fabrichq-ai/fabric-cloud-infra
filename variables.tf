@@ -93,6 +93,12 @@ variable "ec2_instance_type" {
   default     = "t2.xlarge"
 }
 
+variable "livekit_instance_type" {
+  description = "Enable Application Load Balancer"
+  type        = string
+  default     = "c8g.xlarge"
+}
+
 variable "key_pair_name" {
   type    = string
   default = ""
@@ -111,7 +117,7 @@ variable "server_ec2_ami_id" {
 
 variable "alb_domains" {
   type        = list(string)
-  default     = ["app.fabrichq.ai", "app-api.fabrichq.ai", "dashboard.fabrichq.ai"]
+  default     = ["app.fabrichq.ai", "app-api.fabrichq.ai", "dashboard.fabrichq.ai","calling-system.fabrichq.ai","calling-system.api.fabrichq.ai"]
   description = "Primary + SANs for ACM cert"
 }
 

@@ -593,6 +593,28 @@ resource "aws_instance" "app" {
   tags = merge(local.common_tags, { Name = "${var.project}-app-ec2" })
 }
 
+resource "aws_instance" "calling_system" {
+  ami                         = "ami-075b06d55777be7cd"
+  instance_type               = var.livekit_instance_type
+  subnet_id                   = aws_subnet.private_app.id
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  key_name                    = var.key_pair_name != "" ? var.key_pair_name : null
+  associate_public_ip_address = false
+  disable_api_termination     = false
+  monitoring                  = true
+
+  # Attach CW agent IAM profile
+  iam_instance_profile        = aws_iam_instance_profile.cw_agent.name
+
+  root_block_device {
+    volume_size           = 50          # 100GB more than default if it was 20GB
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  tags = merge(local.common_tags, { Name = "${var.project}-calling-system-ec2" })
+}
+
 resource "aws_instance" "dashboard_app" {
   ami                         = "ami-075b06d55777be7cd"
   instance_type               = "t4g.medium"
@@ -609,7 +631,7 @@ resource "aws_instance" "dashboard_app" {
 # 7.  LOAD BALANCER    #
 ########################
 
-resource "aws_acm_certificate" "prod" {
+resource "aws_acm_certificate" "new_prod" {
   domain_name               = var.alb_domains[0]
   subject_alternative_names = slice(var.alb_domains, 1, length(var.alb_domains))
   validation_method         = "DNS"
@@ -617,10 +639,10 @@ resource "aws_acm_certificate" "prod" {
 }
 
 # Output the exact CNAMEs you must create in Namecheap
-output "acm_dns_validation_records_prod" {
+output "acm_dns_validation_records_new_prod" {
   description = "Create these CNAME records in Namecheap."
   value = {
-    for dvo in aws_acm_certificate.prod.domain_validation_options :
+    for dvo in aws_acm_certificate.new_prod.domain_validation_options :
     dvo.domain_name => {
       name  = dvo.resource_record_name
       type  = dvo.resource_record_type
@@ -629,11 +651,11 @@ output "acm_dns_validation_records_prod" {
   }
 }
 
-data "aws_acm_certificate" "prod_issued" {
+data "aws_acm_certificate" "new_prod_issued" {
   domain      = var.alb_domains[0]
   statuses    = ["ISSUED"]
   most_recent = true
-  depends_on  = [aws_acm_certificate.prod]
+  depends_on  = [aws_acm_certificate.new_prod]
 }
 
 resource "aws_lb" "app" {
@@ -685,13 +707,32 @@ resource "aws_lb_target_group" "dashboard" {
   tags = local.common_tags
 }
 
+resource "aws_lb_target_group" "calling_system" {
+  count       = var.enable_alb ? 1 : 0
+  name        = "${var.project}-calling-system-tg"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    unhealthy_threshold = 2
+    healthy_threshold   = 3
+  }
+
+  tags = local.common_tags
+}
+
 resource "aws_lb_listener" "https" {
   count             = var.enable_alb ? 1 : 0
   load_balancer_arn = aws_lb.app[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = data.aws_acm_certificate.prod_issued.arn
+  certificate_arn   = data.aws_acm_certificate.new_prod_issued.arn
 
   default_action {
     type             = "forward"
@@ -712,6 +753,23 @@ resource "aws_lb_listener_rule" "https_dashboard_redirect" {
   condition {
     host_header {
       values = ["dashboard.fabrichq.ai"]
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "https_calling_system_redirect" {
+  count        = var.enable_alb ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 21
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.calling_system[0].arn
+  }
+
+  condition {
+    host_header {
+      values = ["calling-system.fabrichq.ai", "calling-system.api.fabrichq.ai"]
     }
   }
 }
@@ -744,6 +802,13 @@ resource "aws_lb_target_group_attachment" "dashboard" {
   count            = var.enable_alb ? 1 : 0
   target_group_arn = aws_lb_target_group.dashboard[0].arn
   target_id        = aws_instance.dashboard_app.id
+  port             = 80
+}
+
+resource "aws_lb_target_group_attachment" "calling_system" {
+  count            = var.enable_alb ? 1 : 0
+  target_group_arn = aws_lb_target_group.calling_system[0].arn
+  target_id        = aws_instance.calling_system.id
   port             = 80
 }
 
