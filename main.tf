@@ -207,7 +207,6 @@ resource "aws_security_group" "alb" {
   tags = merge(local.common_tags, { Name = "${var.project}-alb-sg" })
 }
 
-
 # NEW: SG for Client VPN network association ENI
 resource "aws_security_group" "cvpn_eni" {
   name        = "${var.project}-cvpn-eni-sg"
@@ -259,9 +258,9 @@ resource "aws_security_group" "app" {
 
   # SSH access from VPN clients
   ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
     security_groups = [aws_security_group.cvpn_eni.id]
   }
 
@@ -275,7 +274,133 @@ resource "aws_security_group" "app" {
   tags = merge(local.common_tags, { Name = "${var.project}-app-sg" })
 }
 
-# RDS SG (allow from app SG and VPN clients)
+# NEW: LiveKit Security Group
+resource "aws_security_group" "livekit" {
+  name        = "${var.project}-livekit-sg"
+  description = "Security group for LiveKit WebSocket and WebRTC connectivity"
+  vpc_id      = aws_vpc.main.id
+
+  # Allow ALB->LiveKit on HTTP/HTTPS
+  ingress {
+    description     = "HTTP from ALB"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description     = "HTTPS from ALB"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description     = "Custom port from ALB"
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  # SSH access from VPN clients
+  ingress {
+    description     = "SSH from VPN clients"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.cvpn_eni.id]
+  }
+
+  # LiveKit WebRTC incoming ports (for peer-to-peer connections)
+  ingress {
+    description = "WebRTC UDP range"
+    from_port   = 50000
+    to_port     = 60000
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "WebRTC TCP fallback"
+    from_port   = 7881
+    to_port     = 7881
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Outbound rules for LiveKit Cloud connectivity
+  egress {
+    description = "HTTPS/WSS to LiveKit Cloud"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "TURN/UDP to LiveKit Cloud"
+    from_port   = 3478
+    to_port     = 3478
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "WebRTC UDP range outbound"
+    from_port   = 50000
+    to_port     = 60000
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "WebRTC TCP outbound"
+    from_port   = 7881
+    to_port     = 7881
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Standard outbound for HTTP, DNS, etc.
+  egress {
+    description = "HTTP outbound"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS UDP"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS TCP"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "NTP"
+    from_port   = 123
+    to_port     = 123
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.common_tags, { Name = "${var.project}-livekit-sg" })
+}
+
+# RDS SG (allow from app SG, livekit SG, and VPN clients)
 resource "aws_security_group" "rds" {
   name        = "${var.project}-rds-sg"
   description = "RDS isolated SG"
@@ -283,17 +408,28 @@ resource "aws_security_group" "rds" {
 
   # Allow from app servers
   ingress {
+    description     = "PostgreSQL from app servers"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.app.id]
   }
 
+  # Allow from LiveKit servers
+  ingress {
+    description     = "PostgreSQL from LiveKit servers"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.livekit.id]
+  }
+
   # Allow from VPN clients
   ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
+    description     = "PostgreSQL from VPN clients"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
     security_groups = [aws_security_group.cvpn_eni.id]
   }
 
@@ -600,11 +736,12 @@ resource "aws_instance" "app" {
   tags = merge(local.common_tags, { Name = "${var.project}-app-ec2" })
 }
 
+# UPDATED: LiveKit calling system instance with new security group
 resource "aws_instance" "calling_system" {
   ami                         = "ami-075b06d55777be7cd"
   instance_type               = var.livekit_instance_type
   subnet_id                   = aws_subnet.private_app.id
-  vpc_security_group_ids      = [aws_security_group.app.id]
+  vpc_security_group_ids      = [aws_security_group.livekit.id]  # Changed to use LiveKit SG
   key_name                    = var.key_pair_name != "" ? var.key_pair_name : null
   associate_public_ip_address = false
   disable_api_termination     = false
@@ -888,6 +1025,11 @@ output "ec2_private_ip" {
   value = aws_instance.app.private_ip
 }
 
+output "calling_system_private_ip" {
+  value       = aws_instance.calling_system.private_ip
+  description = "LiveKit calling system private IP"
+}
+
 output "rds_endpoint" {
   value = aws_db_instance.main.endpoint
 }
@@ -925,6 +1067,12 @@ resource "local_file" "ca_certificate" {
 output "vpn_configuration_download_command" {
   value       = "aws ec2 export-client-vpn-client-configuration --client-vpn-endpoint-id ${aws_ec2_client_vpn_endpoint.main.id} --output text > ${var.project}-vpn-config.ovpn"
   description = "Run this command to download the VPN configuration file after deployment"
+}
+
+# NEW: LiveKit Security Group ID output
+output "livekit_security_group_id" {
+  value       = aws_security_group.livekit.id
+  description = "Security Group ID for LiveKit instances"
 }
 
 ################################################################################
