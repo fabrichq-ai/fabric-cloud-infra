@@ -397,6 +397,14 @@ resource "aws_security_group" "livekit" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  egress {
+    description = "SSH outbound for Git"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = merge(local.common_tags, { Name = "${var.project}-livekit-sg" })
 }
 
@@ -809,7 +817,7 @@ resource "aws_lb" "app" {
   load_balancer_type         = "application"
   security_groups            = [aws_security_group.alb.id]
   subnets                    = [aws_subnet.public_1.id, aws_subnet.public_2.id]
-  enable_deletion_protection = false
+  enable_deletion_protection = true
   tags                       = local.common_tags
   idle_timeout = 300
 }
